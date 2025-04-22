@@ -1,174 +1,304 @@
+1
 %python
+%pip install opencv-python
+ 
+import cv2
+import numpy as np
+from transformers import Blip2Processor, Blip2ForConditionalGeneration
+import torch
+from PIL import Image
+from typing import List, Tuple
+ 
+# Initialize device
+device = "cuda" if torch.cuda.is_available() else "cpu"
+ 
+# Load BLIP-2 model and processor
+processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
+model = Blip2ForConditionalGeneration.from_pretrained(
+    "Salesforce/blip2-opt-2.7b",
+    torch_dtype=torch.float16 if device == "cuda" else torch.float32
+).to(device)
+ 
+def detect_scenes(video_path: str, window_size: int = 100, overlap: int = 50, threshold: float = 30.0) -> List[Tuple[float, float]]:
+    """
+    Detect scene changes in video using a sliding window approach
+    Returns list of (start_time, end_time) tuples in seconds
+    """
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+   
+    prev_hist = None
+    scenes = []
+    scene_start = 0.0
+    frame_count = 0
+   
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+       
+        current_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+        frame_count += 1
+       
+        # Convert to grayscale and calculate histogram
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+        hist = cv2.normalize(hist, hist).flatten()
+       
+        if prev_hist is not None:
+            # Calculate histogram difference
+            diff = cv2.compareHist(prev_hist, hist, cv2.HISTCMP_CORREL)
+           
+            if diff < threshold / 100:  # Scene change detected
+                scenes.append((scene_start, current_time))
+                scene_start = current_time
+               
+        prev_hist = hist
+       
+        # Sliding window logic
+        if frame_count % window_size == 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count - overlap)
+   
+    # Add final scene
+    scenes.append((scene_start, current_time))
+    cap.release()
+    return scenes
+ 
+def extract_key_frame(video_path: str, start_time: float, end_time: float) -> Image.Image:
+    """Extract middle frame from a scene segment"""
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+   
+    # Calculate middle frame position
+    middle_time = (start_time + end_time) / 2
+    cap.set(cv2.CAP_PROP_POS_MSEC, middle_time * 1000)
+   
+    ret, frame = cap.read()
+    cap.release()
+   
+    if ret:
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(frame)
+    return None
+ 
+def generate_scene_description(frame: Image.Image) -> str:
+    """Generate text description of a frame using BLIP-2"""
+    inputs = processor(
+        images=frame,
+        return_tensors="pt"
+    ).to(device, torch.float16 if device == "cuda" else torch.float32)
+   
+    generated_ids = model.generate(**inputs, max_new_tokens=100)
+    description = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+    return description
+ 
+def process_video(video_path: str) -> List[dict]:
+    """Main processing function"""
+    print("Detecting scenes...")
+    scenes = detect_scenes(video_path)
+    print(f"Found {len(scenes)} scenes")
+   
+    summaries = []
+   
+    for i, (start, end) in enumerate(scenes):
+        print(f"Processing scene {i+1}/{len(scenes)}")
+       
+        # Extract key frame
+        frame = extract_key_frame(video_path, start, end)
+        if frame is None:
+            continue
+           
+        # Generate description
+        description = generate_scene_description(frame)
+       
+        summaries.append({
+            "scene": i+1,
+            "start_time": start,
+            "end_time": end,
+            "duration": end - start,
+            "summary": description
+        })
+   
+    return summaries
+ 
+def print_summary(summaries: List[dict]):
+    """Print formatted summary"""
+    for entry in summaries:
+        print(f"\nScene {entry['scene']} ({entry['duration']:.1f}s)")
+        print(f"From {entry['start_time']:.1f}s to {entry['end_time']:.1f}s")
+        print(f"Summary: {entry['summary']}")
+ 
+if __name__ == "__main__":
+    video_path = "/Workspace/Users/ranadhir.ghosh@fisglobal.com/video_analysis/input_video.mp4"  # Change this to your video path
+   
+    print("Starting video analysis...")
+    summaries = process_video(video_path)
+   
+    print("\nFinal Video Summary:")
+    print_summary(summaries)
+ 
+2
+Use the following code for traiing purpose : %python
+%pip install scenedetect opencv-python qwen-vl-utils peft accelerate datasets
+ 
+import os
+from PIL import Image
 import cv2
 import torch
-import numpy as np
-from PIL import Image
-from transformers import CLIPProcessor, CLIPModel
-import faiss
-import tempfile
-from typing import List, Tuple
+from scenedetect import open_video, SceneManager
+from scenedetect.detectors import ContentDetector
+from transformers import (
+    Qwen2VLForConditionalGeneration,
+    AutoProcessor,
+    TrainingArguments,
+    Trainer,
+    default_data_collator
+)
+from qwen_vl_utils import process_vision_info
+from peft import LoraConfig, get_peft_model
+from datasets import Dataset
 import json
-import os
-
-# Configuration
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-CLIP_MODEL_NAME = "openai/clip-vit-base-patch32"
-SCENE_CHANGE_THRESHOLD = 30.0  # Frame difference threshold for scene detection
-
-# Initialize CLIP model
-processor = CLIPProcessor.from_pretrained(CLIP_MODEL_NAME)
-model = CLIPModel.from_pretrained(CLIP_MODEL_NAME).to(DEVICE)
-
-class VideoAnalyzer:
-    def __init__(self):
-        self.kb = self.initialize_knowledge_base()
-        
-    def initialize_knowledge_base(self):
-        # Initialize with empty KB
-        kb = faiss.IndexFlatL2(model.config.projection_dim)
-        return kb
-
-    def detect_scenes(self, video_path: str) -> List[Tuple[float, float]]:
-        """Detect scene changes using frame differences"""
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise FileNotFoundError(f"Cannot open video file: {video_path}")
-        
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        scenes = []
-        prev_frame = None
-        scene_start = 0.0
-        
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-                
-            current_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            
-            if prev_frame is not None:
-                diff = cv2.absdiff(prev_frame, gray)
-                non_zero_count = np.count_nonzero(diff)
-                if non_zero_count > SCENE_CHANGE_THRESHOLD:
-                    scenes.append((scene_start, current_time))
-                    scene_start = current_time
-                    
-            prev_frame = gray
-            
-        scenes.append((scene_start, current_time))
-        cap.release()
-        return scenes
-
-    def extract_key_frames(self, video_path: str, scenes: List[Tuple[float, float]]) -> List[Image.Image]:
-        """Extract middle frame from each scene"""
-        frames = []
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise FileNotFoundError(f"Cannot open video file: {video_path}")
-        
-        for start, end in scenes:
-            middle = (start + end) / 2
-            cap.set(cv2.CAP_PROP_POS_MSEC, middle * 1000)
-            ret, frame = cap.read()
-            if ret:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append(Image.fromarray(frame))
-                
-        cap.release()
-        return frames
-
-    def extract_features(self, frames: List[Image.Image]) -> np.ndarray:
-        """Extract features from a sequence of frames using CLIP"""
-        inputs = processor(
-            images=frames,
-            return_tensors="pt",
-            padding=True
-        ).to(DEVICE)
-        
-        with torch.no_grad():
-            outputs = model.get_image_features(**inputs)
-        
-        # Aggregate features from all frames
-        features = outputs.cpu().numpy()
-        return features
-
-    def add_to_knowledge_base(self, features: np.ndarray):
-        """Add features to the FAISS knowledge base"""
-        self.kb.add(features)
-
-    def search_similar(self, query_features: np.ndarray, k: int = 5) -> List[Tuple[int, float]]:
-        """Search for similar features in the FAISS knowledge base"""
-        distances, indices = self.kb.search(query_features, k)
-        return list(zip(indices[0], distances[0]))
-
-    def process_video(self, video_path: str) -> List[dict]:
-        """Full video processing pipeline"""
-        try:
-            print("Starting video analysis...")
-            print("Detecting scenes...")
-            
-            # Scene detection
-            scenes = self.detect_scenes(video_path)
-            print(f"Found {len(scenes)} scenes")
-            
-            # Key frame extraction
-            key_frames = self.extract_key_frames(video_path, scenes)
-            print(f"Extracted {len(key_frames)} key frames")
-            
-            # Feature extraction
-            features = self.extract_features(key_frames)
-            print(f"Extracted features with shape: {features.shape}")
-            
-            # Add features to knowledge base
-            self.add_to_knowledge_base(features)
-            print("Added features to knowledge base")
-            
-            # Explanation generation
-            explanations = self.generate_explanations(key_frames)
-            print(f"Generated explanations: {explanations}")
-            
-            # Format results
-            results = [{
-                "start": scene[0],
-                "end": scene[1],
-                "duration": scene[1] - scene[0],
-                "explanation": expl,
-                "features": feat.tolist()
-            } for scene, expl, feat in zip(scenes, explanations, features)]
-            
-            # Save results to JSON file
-            json_path = video_path.replace(".mp4", ".json")
-            with open(json_path, "w") as json_file:
-                json.dump(results, json_file, indent=4)
-            
-            # Print results to output terminal
-            print("Final Video Summary:\n")
-            for i, result in enumerate(results):
-                print(f"Scene {i+1} ({result['duration']:.1f}s)")
-                print(f"From {result['start']:.1f}s to {result['end']:.1f}s")
-                print(f"Summary: {result['explanation']}\n")
-            
-            return results
-        except Exception as e:
-            print(f"Error processing video: {e}")
-            return []
-
-if __name__ == "__main__":
-    # Path to your video
-    video_path = "/Workspace/Users/mrinalini.vettri@fisglobal.com/video_analysis/sonar_embedding/dataset/video2.mp4"
-    
-    analyzer = VideoAnalyzer()
-    
-    # Process the video
-    results = analyzer.process_video(video_path)
-    
-    # Print or save the results
-    print(f"Results for {video_path}:")
-    print(json.dumps(results, indent=4))
-    
-    # Example of searching for similar features
-    if results:
-        query_features = np.array(results[0]['features']).reshape(1, -1)
-        similar_items = analyzer.search_similar(query_features)
-        print(f"Similar items: {similar_items}")
+ 
+# --- Read Hugging Face API Key ---
+HF_API_KEY = dbutils.secrets.get(scope="my_secret_scope", key="huggingface_api_key")
+os.environ["HUGGINGFACE_API_KEY"] = HF_API_KEY
+ 
+# --- Configuration for Fine-Tuning ---
+TRAINING_CONFIG = {
+    "model_id": "Qwen/Qwen2-VL-7B-Instruct",
+    "dataset_path": "/path/to/your/word_actions_dataset",
+    "lora_r": 8,
+    "lora_alpha": 32,
+    "lora_target_modules": ["q_proj", "v_proj"],
+    "max_steps": 1000,
+    "per_device_train_batch_size": 1,
+    "gradient_accumulation_steps": 4,
+    "learning_rate": 2e-5,
+    "output_dir": "./word_action_model"
+}
+ 
+# --- Initialize Base Model ---
+model = Qwen2VLForConditionalGeneration.from_pretrained(
+    TRAINING_CONFIG["model_id"],
+    torch_dtype=torch.bfloat16,
+    device_map="auto",
+    use_auth_token=HF_API_KEY
+)
+processor = AutoProcessor.from_pretrained(TRAINING_CONFIG["model_id"], use_auth_token=HF_API_KEY)
+ 
+# --- Prepare PEFT/LoRA Configuration ---
+peft_config = LoraConfig(
+    r=TRAINING_CONFIG["lora_r"],
+    lora_alpha=TRAINING_CONFIG["lora_alpha"],
+    target_modules=TRAINING_CONFIG["lora_target_modules"],
+    lora_dropout=0.05,
+    bias="none",
+    task_type="CAUSAL_LM"
+)
+model = get_peft_model(model, peft_config)
+model.print_trainable_parameters()
+ 
+# --- Custom Dataset Preparation ---
+def prepare_training_dataset(dataset_path):
+    # Sample dataset format:
+    # [
+    #   {
+    #     "image": "mail_merge_step1.jpg",
+    #     "description": "User clicks Mailings tab > Start Mail Merge > Step-by-Step Mail Merge Wizard"
+    #   },
+    #   ...
+    # ]
+   
+    with open(os.path.join(dataset_path, "annotations.json")) as f:
+        annotations = json.load(f)
+   
+    def gen():
+        for item in annotations:
+            image = Image.open(os.path.join(dataset_path, item["image"]))
+            yield {
+                "pixel_values": processor(images=image, return_tensors="pt").pixel_values[0],
+                "labels": processor(text=item["description"], return_tensors="pt").input_ids[0]
+            }
+   
+    return Dataset.from_generator(gen)
+ 
+# --- Training Function ---
+def fine_tune_word_actions():
+    dataset = prepare_training_dataset(TRAINING_CONFIG["dataset_path"])
+   
+    training_args = TrainingArguments(
+        output_dir=TRAINING_CONFIG["output_dir"],
+        max_steps=TRAINING_CONFIG["max_steps"],
+        per_device_train_batch_size=TRAINING_CONFIG["per_device_train_batch_size"],
+        gradient_accumulation_steps=TRAINING_CONFIG["gradient_accumulation_steps"],
+        learning_rate=TRAINING_CONFIG["learning_rate"],
+        fp16=True,
+        logging_steps=10,
+        remove_unused_columns=False
+    )
+   
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=dataset,
+        data_collator=default_data_collator
+    )
+   
+    trainer.train()
+    model.save_pretrained(TRAINING_CONFIG["output_dir"])
+ 
+# --- Modified Analysis Function with Fine-Tuned Model ---
+def analyze_word_action(video_path, scene_timestamps):
+    key_frames = extract_key_frames(video_path, scene_timestamps)
+   
+    # Load fine-tuned model
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
+        TRAINING_CONFIG["model_id"],
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        use_auth_token=HF_API_KEY
+    )
+    model = PeftModel.from_pretrained(model, TRAINING_CONFIG["output_dir"])
+   
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image", "image": key_frames[0]},
+            {"type": "text", "text": "Identify the Microsoft Word action sequence shown:"}
+        ]
+    }]
+   
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = processor(
+        text=[text],
+        images=[key_frames[0]],
+        return_tensors="pt"
+    ).to("cuda")
+   
+    generated_ids = model.generate(**inputs, max_new_tokens=150)
+    return processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+ 
+# --- Integration with Existing Pipeline ---
+def process_video(video_path):
+    scenes = detect_scenes(video_path)
+    structured_output = []
+   
+    for scene in scenes:
+        action_sequence = analyze_word_action(video_path, [scene])
+        structured_data = {
+            "application": "Microsoft Word",
+            "detected_action": action_sequence,
+            "time_range": f"{scene[0]}s-{scene[1]}s",
+            "steps": extract_action_steps(action_sequence)
+        }
+        structured_output.append(structured_data)
+   
+    return structured_output
+ 
+# --- Helper Function ---
+def extract_action_steps(description):
+    prompt = f"""Extract ordered steps from: {description}"""
+    inputs = mistral_tokenizer(prompt, return_tensors="pt")
+    outputs = mistral_model.generate(**inputs, max_new_tokens=200)
+    return mistral_tokenizer.decode(outputs[0], skip_special_tokens=True)
+ 
