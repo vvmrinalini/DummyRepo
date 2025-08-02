@@ -1,1 +1,1 @@
-
+i will explain the workflow to you. once the user selects a folder from the interface, that folder must be run by the invoice analyer class. and then whatever radio button they clicked before running the folder , only that corresponding node has to be executed. if they click extract all radio button, then extract_all node must be executed. it should extract all the information from the invoice image - tabular, non tabular and non table text. and then it should return the avg time taken to process one image, no of invoices processed
