@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zenith AI - Invoice Sense</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+
+    <style>
+        .toast-custom {
+            background-color: white;
+            color: black;
+        }
+
+        .toast-custom .toast-title {
+            color: black;
+        }
+
+        .toast-custom .toast-message {
+            color: black;
+        }
+
+        .toast-custom:hover {
+            background-color: white; 
+        }
+
+        .toast-custom-info .toast-progress {
+            background-color: blue;
+        }
+
+        .toast-custom-info .toast-icon {
+            color: blue;
+        }
+
+        .toast-custom-success .toast-progress {
+            background-color: green;
+        }
+
+        .toast-custom-success .toast-icon {
+            color: green;
+        }
+
+        .toast-custom-warning .toast-progress {
+            background-color: orange;
+        }
+
+        .toast-custom-warning .toast-icon {
+            color: orange;
+        }
+
+        .toast-custom-error .toast-progress {
+            background-color: red;
+        }
+
+        .toast-custom-error .toast-icon {
+            color: red;
+        }
+
+        /* Add the CSS for the send button here */
+        #submit-button {
+            background-color: transparent;
+            border: none;
+            margin-left: 10px;
+            cursor: pointer;
+        }
+
+        .send-icon {
+            margin-right: 10px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+<div class="chatbot-container">
+    <div id="header">
+        <div class="header-left">
+            <div class="Invoicesense-header">
+                <h1>Invoice Sense</h1>
+                <div class="headerinput-box">
+                    <div class="image-upload-container">
+                        <input type="text" id="image-path" placeholder="" readonly>
+                        <button id="browse-button">Browse</button>
+                        <button id="run-button">Run</button>
+                    </div>
+                    <div class="radio-container">
+                        <label>
+                            <input type="radio" name="extractOption" id="ExtractAll" value="extract_all" checked>
+                            Extract All
+                        </label>
+                        <label>
+                            <input type="radio" name="extractOption" id="ExtractInvoiceAmount" value="extract_invoice_amount">
+                            Extract Invoice Amount
+                        </label>
+                        <label>
+                            <input type="radio" name="extractOption" id="ExtractItemise" value="extract_itemise">
+                            Extract Itemise
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="header-right">
+            <div class="processing-box" id="processingBox">
+                <h2 class="processing-heading">
+                    Post Run Summary
+                    <span id="loader" class="loader hidden"></span>
+                </h2>
+                <p>Total invoices processed: <span id="processedCount">-</span></p>
+                <p>Average time per invoice: <span id="averageTimePerInvoice">-</span></p>
+            </div>
+        </div>
+    </div>
+
+    <div id="chatbot">
+        <div id="conversation">
+            <div class="chatbot-message">
+                <p class="chatbot-text">Hi there! I’m the AI assistant for Invoice Sense!</p>
+            </div>
+        </div>
+
+        <form id="input-form">
+            <div class="message-container">
+                <input id="input-field" type="text" placeholder="Type your query here...">
+                <button id="submit-button" type="submit">
+                    <img class="send-icon" src="{{ send_img }}" alt="Send">
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    const chat = document.getElementById('conversation');
+    const form = document.getElementById('input-form');
+    const input = document.getElementById('input-field');
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const userText = input.value.trim();
+        if (!userText) {
+            const errorMsg = document.createElement('div');
+            errorMsg.className = 'chatbot-message user-message';
+            errorMsg.innerHTML = `<p class="chatbot-text">⚠️ Please enter a query.</p>`;
+            chat.appendChild(errorMsg);
+            chat.scrollTop = chat.scrollHeight;
+            return;
+        }
+
+        const userMsg = document.createElement('div');
+        userMsg.className = 'chatbot-message user-message';
+        userMsg.innerHTML = `<p class="chatbot-text">${userText}</p>`;
+        chat.appendChild(userMsg);
+        input.value = '';
+        chat.scrollTop = chat.scrollHeight;
+
+        const res = await fetch('/agent_run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt: userText })
+        });
+
+        const data = await res.json();
+        if (data.run_id) {
+            checkStatus(data.run_id);
+        } else {
+            const errorMsg = document.createElement('div');
+            errorMsg.className = 'chatbot-message bot';
+            errorMsg.innerHTML = `<p class="chatbot-text">❌ Error: ${data.error || 'Unknown error'}</p>`;
+            chat.appendChild(errorMsg);
+        }
+    });
+
+    async function checkStatus(runId) {
+        const statusMsg = document.createElement('div');
+        statusMsg.className = 'chatbot-message bot';
+        const loadingMessages = [
+            '🧠 Thinking through your query...',
+            '⏳ Generating gremlin query...',
+            '📊 Fetching results...',
+            '✨ Almost there...'
+        ];
+        statusMsg.innerHTML = `<p class="chatbot-text">${loadingMessages[Math.floor(Math.random() * loadingMessages.length)]}</p>`;
+        chat.appendChild(statusMsg);
+
+        const poll = async () => {
+            const res = await fetch('/check_agent_status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ run_id: runId })
+            });
+
+            const data = await res.json();
+            if (data.status === 'SUCCEEDED') {
+                statusMsg.remove();
+
+                if (data.result.startsWith('<!DOCTYPE html>') || data.result.includes('<html')) {
+                    const blob = new Blob([data.result], { type: 'text/html' });
+                    const url = URL.createObjectURL(blob);
+
+                    const iframe = document.createElement('iframe');
+                    iframe.src = url;
+                    iframe.style.width = '100%';
+                    iframe.style.height = '600px';
+                    iframe.style.border = 'none';
+
+                    const graphWrapper = document.createElement('div');
+                    graphWrapper.className = 'chatbot-message bot';
+                    graphWrapper.appendChild(iframe);
+
+                    chat.appendChild(graphWrapper);
+                    chat.scrollTop = chat.scrollHeight;
+
+                } else if (data.result.trim() !== '') {
+                    const textMsg = document.createElement('div');
+                    textMsg.className = 'chatbot-message bot';
+                    textMsg.innerHTML = `<p class="chatbot-text">${data.result}</p>`;
+                    chat.appendChild(textMsg);
+                } else {
+                    const noResultMsg = document.createElement('div');
+                    noResultMsg.className = 'chatbot-message bot';
+                    noResultMsg.innerHTML = `<p class="chatbot-text">⚠️ No results found for your query. Please check your input and try again.</p>`;
+                    chat.appendChild(noResultMsg);
+                }
+
+                chat.scrollTop = chat.scrollHeight;
+
+            } else if (data.status === 'FAILED' || data.status === 'ERROR') {
+                statusMsg.innerHTML = `<p class="chatbot-text">❌ Failed to generate results: ${data.error || 'Unknown error'}</p>`;
+            } else {
+                statusMsg.innerHTML = `<p class="chatbot-text">${loadingMessages[Math.floor(Math.random() * loadingMessages.length)]}</p>`;
+                setTimeout(poll, 3000);
+            }
+        };
+        poll();
+    }
+</script>
+
+    <div id="popup-container"></div>
+
+    <div id="toast-container"></div>
+
+    <script>
+        let icon = {
+            success: '<span class="material-symbols-outlined">task_alt</span>',
+            danger: '<span class="material-symbols-outlined">error</span>',
+            warning: '<span class="material-symbols-outlined">warning</span>',
+            info: '<span class="material-symbols-outlined">info</span>',
+        };
+
+        const showToast = (
+            message = "Sample Message",
+            toastType = "info",
+            duration = 8000) => {
+
+            if (!Object.keys(icon).includes(toastType)) toastType = "info";
+
+            let box = document.createElement("div");
+            box.classList.add("toast", `toast-${toastType}`);
+            box.innerHTML = `
+                <div class="toast-content-wrapper">
+                    <div class="toast-icon">${icon[toastType]}</div>
+                    <div class="toast-message">${message}</div>
+                    <div class="toast-close" title="Close">&times;</div>
+                    <div class="toast-progress"></div>
+                </div>`;
+
+            let progressBar = box.querySelector(".toast-progress");
+            progressBar.style.animationDuration = `${duration / 1000}s`;
+
+            // Remove any existing toast before adding a new one
+            let toastContainer = document.getElementById('toast-container');
+            if (!toastContainer) {
+                toastContainer = document.createElement('div');
+                toastContainer.id = 'toast-container';
+                document.body.appendChild(toastContainer);
+            }
+            // Prepend the new toast to show it at the top
+            toastContainer.prepend(box);
+
+            // Close button behavior
+            box.querySelector('.toast-close').addEventListener('click', () => {
+                box.remove();
+            });
+
+            // Auto remove after duration
+            let timeoutId = setTimeout(() => {
+                if (box.parentNode) box.remove();
+            }, duration + 200);
+
+            // Pause progress bar on hover
+            box.addEventListener('mouseover', () => {
+                progressBar.style.animationPlayState = 'paused';
+                clearTimeout(timeoutId);
+            });
+
+            // Resume progress bar when not hovering
+            box.addEventListener('mouseout', () => {
+                progressBar.style.animationPlayState = 'running';
+                timeoutId = setTimeout(() => {
+                    if (box.parentNode) box.remove();
+                }, duration + 200);
+            });
+        };
+
+        // Add event listener to the checkbox
+        document.getElementById('ExtractAll').addEventListener('click', function(event) {
+            if (!this.checked) {
+                event.preventDefault();
+                this.checked = true;
+                showToast("Extract All checkbox cannot be unchecked.", "warning", 8000);
+            }
+        });
+
+    </script>
+
+    <script>
+        function sendMessage() {
+            const input = document.getElementById("userInput");
+            const message = input.value.trim();
+            if (message === "") return;
+
+            const chatBox = document.getElementById("chatBox");
+
+            // Display user's message
+            const userMessage = document.createElement("div");
+            userMessage.textContent = "You: " + message;
+            chatBox.appendChild(userMessage);
+
+            // Simulate AI response (replace with actual backend call if available)
+            const aiMessage = document.createElement("div");
+            aiMessage.textContent = "AI: " + "Thanks for your message!";
+            chatBox.appendChild(aiMessage);
+
+            input.value = ""; // Clear input
+        }
+    </script>
+
+    <script>
+        const conversation = document.getElementById('conversation');
+        const inputForm = document.getElementById('input-form');
+        const inputField = document.getElementById('input-field');
+        const progressBar = document.getElementById("progressBar");
+        const progressText = document.getElementById("progressText");
+        const progressContainer = document.getElementById("progressContainer");
+
+        fetch('/static/index2.html')
+        .then(response => response.text())
+        .then(data => {
+            document.getElementById('popup-container').innerHTML = data;
+
+            const browseButton = document.getElementById('browse-button');
+            const modalOverlay = document.getElementById('modal-overlay');
+            const closePopup = document.getElementById('close-popup');
+            const popupHeading = document.getElementById('popup-heading');
+            const popupContent = document.getElementById('popup-content');
+
+            browseButton.addEventListener('click', () => {
+                modalOverlay.classList.remove('hidden');
+                popupHeading.textContent = 'Browse';
+                popupContent.innerHTML = `
+                    <div class="browse-box" id="browse-dbfs">Browse from DBFS</div>
+                    <div class="browse-box" id="browse-local">Browse Locally</div>
+                `;
+
+                bindBrowseOptions();
+            });
+
+            closePopup.addEventListener('click', () => {
+                modalOverlay.classList.add('hidden');
+            });
+
+            modalOverlay.addEventListener('click', (e) => {
+                if (e.target === modalOverlay) {
+                    modalOverlay.classList.add('hidden');
+                }
+            });
+
+            function bindBrowseOptions() {
+                const browseDBFS = document.getElementById('browse-dbfs');
+                const browseLocal = document.getElementById('browse-local');
+
+                if (browseDBFS) {
+                    browseDBFS.addEventListener('click', async () => {
+                        popupHeading.textContent = 'Select a file or folder';
+                        popupContent.innerHTML = '<p>Loading ...</p>';
+
+                        try {
+                            const response = await fetch('/list_images');
+                            const data = await response.json();
+
+                            if (data.status === 'success') {
+                                const images = data.images;
+                                const folders = data.folders;
+
+                                if (images.length === 0 && folders.length === 0) {
+                                    popupContent.innerHTML = '<p>No images or folders found in DBFS folder.</p>';
+                                    return;
+                                }
+
+                                // Build HTML
+                                let html = '<div class="image-folder-list">';
+
+                                // Folders section
+                                if (folders.length > 0) {
+                                    folders.forEach(folder => {
+                                        html += `
+                                            <div class="folder-item" style="cursor: pointer;" onclick="selectFolderFromDBFS('${folder}')">
+                                                <img src="/static/image/folder-icon.png" alt="Folder Icon" class="folder-icon" />
+                                                <span>${folder}</span>
+                                            </div>
+                                        `;
+                                    });
+                                }
+
+                                // Images section
+                                if (images.length > 0) {
+                                    images.forEach(image => {
+                                        html += `
+                                            <div class="image-item" style="cursor: pointer;" onclick="selectImageFromDBFS('${image}')">
+                                                <img src="/static/image/image-icon.png" alt="Image Icon" class="image-icon" />
+                                                <div>${image}</div>
+                                            </div>
+                                        `;
+                                    });
+                                    html += `</div>`;
+                                }
+
+                                popupContent.innerHTML = html;
+
+                                document.querySelectorAll('.image-item').forEach(el => {
+                                    el.addEventListener('click', () => {
+                                        const imageName = el.querySelector('div').textContent;
+                                        selectImageFromDBFS(imageName);
+                                    });
+                                });
+
+                                document.querySelectorAll('.folder-item').forEach(el => {
+                                    el.addEventListener('click', () => {
+                                        const folderName = el.querySelector('span').textContent;
+                                        selectFolderFromDBFS(folderName);
+                                    });
+                                });
+
+                            } else {
+                                popupContent.innerHTML = `<p>Error loading images: ${data.message}</p>`;
+                            }
+                        } catch (error) {
+                            popupContent.innerHTML = `<p>Error fetching images: ${error}</p>`;
+                        }
+                    });
+                }
+
+                if (browseLocal) {
+                    browseLocal.addEventListener('click', () => {
+                        const fileInput = document.createElement('input');
+                        fileInput.type = 'file';
+                        fileInput.style.display = 'none';
+                        document.body.appendChild(fileInput);
+
+                        fileInput.addEventListener('change', (event) => {
+                            const file = event.target.files[0];
+                            if (file) {
+                                document.getElementById('image-path').value = file.name;
+                            }
+                            document.body.removeChild(fileInput);
+                            modalOverlay.classList.add('hidden');
+                        });
+
+                        fileInput.click();
+                    });
+                }
+            }
+
+            bindBrowseOptions();
+        });
+
+        function selectImageFromDBFS(imageName) {
+            document.getElementById('image-path').value = imageName;
+            document.getElementById('modal-overlay').classList.add('hidden');
+        }
+
+        function selectFolderFromDBFS(folderName) {
+            document.getElementById('image-path').value = folderName;
+            document.getElementById('modal-overlay').classList.add('hidden');
+        }
+
+        function addMessage(text, isUser = false) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `chatbot-message ${isUser ? 'user-message' : ''}`;
+            
+            const textDiv = document.createElement('div');
+            textDiv.className = 'chatbot-text';
+            textDiv.innerHTML = text;
+            
+            messageDiv.appendChild(textDiv);
+            conversation.appendChild(messageDiv);
+            conversation.scrollTop = conversation.scrollHeight;
+        }
+
+        function hideProgress() {
+            progressContainer.style.display = 'none';
+            progressText.style.display = 'none';
+        }
+
+        function displayResultsInBox(data) {
+            console.log("Received data",data);
+            const result = data.result.result;
+            const isFolder = result.is_folder || false;
+
+            // Processed count
+            const processedCount = isFolder ? result.processed_count : 0;
+            document.getElementById("processedCount").textContent = processedCount;
+
+            // Average time per cheque
+            const averageTimeStr = result.average_processing_time_per_invoice || "0";
+            const averageTime = parseFloat(averageTimeStr);
+            document.getElementById("averageTimePerInvoice").textContent = averageTime.toFixed(2) + ' seconds';
+        }
+
+        function getAccuracyClass(accuracy) {
+            if (!accuracy) return '';
+            if (accuracy >= 90) return 'accuracy-high';
+            if (accuracy >= 70) return 'accuracy-medium';
+            return 'accuracy-low';
+        }
+
+        document.getElementById('image-path').addEventListener('click', function() {
+            document.getElementById('browse-button').click();
+        });
+
+        document.getElementById("run-button").addEventListener("click", function () {
+            const inputPath = document.getElementById("image-path").value.trim();
+            const selectedOption = document.querySelector('input[name="extractOption"]:checked').value;
+
+            if (!inputPath) {
+                showToast("Browse an image or a folder.", "warning", 8000);
+                return;
+            }
+
+        clearPostRunSummary();
+        document.getElementById('loader').classList.remove('hidden');
+
+        fetch('/invoice_run', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                input_path: inputPath,
+                extract_all: selectedOption === 'extract_all',
+                extract_invoice_amount: selectedOption === 'extract_invoice_amount',
+                extract_itemise: selectedOption === 'extract_itemise'
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'Error') {
+                throw new Error(data.error);
+            }
+            showToast('Job submitted, waiting for results...', 'info', 8000);
+            return pollJobStatus(data.run_id);
+        })
+        .then(result => {
+            setTimeout(() => {
+                displayResultsInBox(result);
+                showToast('Analysis completed successfully!', 'success', 8000);
+                document.getElementById('loader').classList.add('hidden');
+                addMessage('The batch has finished running. Would you like to ask any questions about the last run?');
+            }, 200);
+        })
+        .catch(error => {
+            showToast(`Error: ${error.message}`, "danger", 8000);
+            console.error('Error:', error);
+            document.getElementById('loader').classList.add('hidden');
+        });
+    });
+
+        function clearPostRunSummary() {
+            document.getElementById("processedCount").textContent = "-";
+            document.getElementById("averageTimePerInvoice").textContent = "-";
+        }
+
+        inputForm.addEventListener('submit', function(event) {
+            event.preventDefault();
+            const inputPath = inputField.value.trim();
+        });
+
+        function pollJobStatus(runId) {
+            return new Promise((resolve, reject) => {
+                function checkStatus() {
+                    fetch('/check_invoice_status', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            run_id: runId
+                        })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.status === 'Error') {
+                            reject(new Error(data.error));
+                        } else if (data.status === 'Succeed') {
+                            resolve(data);
+                        } else if (data.status === 'Not-Succeed') {
+                            reject(new Error(data.result));
+                        } else {
+                            setTimeout(checkStatus, 2000);
+                        }
+                    })
+                    .catch(reject);
+                }
+                checkStatus();
+            });
+        }
+    </script>
+
+</body>
+</html>
